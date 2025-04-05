@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'db.dart';
 import 'package:intl/intl.dart';
+import 'dart:async';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -147,17 +148,45 @@ class _StudentListScreenState extends State<StudentListScreen> {
     _fetchStudents();
   }
 
+  Future<void> _updateShowButtons() async {
+    var box = await Hive.openBox('schoolBox');
+    final allStudents = List<Map<String, dynamic>>.from(box.get('students', defaultValue: []));
+    final lessons = List<Map<String, dynamic>>.from(box.get('lessons', defaultValue: []));
+
+    final updatedStudents = allStudents.map((student) {
+      final lesson = lessons.firstWhere((lesson) => lesson['id'] == student['lessonId']);
+      final startTime = lesson['startTime'];
+
+      // Проверяем, прошло ли время начала урока
+      if (_isExplanationRequired(startTime) && student['isPresent'] == 0) {
+        return {
+          ...student,
+          'showButtons': true,
+        };
+      }
+      return student;
+    }).toList();
+
+    await box.put('students', updatedStudents);
+    _fetchStudents(); // Обновляем список студентов
+  }
+
   bool _isExplanationRequired(String startTime) {
     final now = DateTime.now();
     final lessonStartTime = DateFormat('HH:mm').parse(startTime);
     final lessonStartDateTime = DateTime(now.year, now.month, now.day, lessonStartTime.hour, lessonStartTime.minute);
-    return now.difference(lessonStartDateTime).inMinutes >= 10;
+    return now.difference(lessonStartDateTime).inMinutes > 10;
   }
 
   @override
   void initState() {
     super.initState();
     _fetchStudents();
+
+    // Запускаем таймер для проверки времени каждую минуту
+    Timer.periodic(const Duration(minutes: 1), (timer) {
+      _updateShowButtons();
+    });
   }
 
   @override
@@ -199,7 +228,7 @@ class _StudentListScreenState extends State<StudentListScreen> {
           rows: students.map((student) {
             final lesson = Hive.box('schoolBox').get('lessons').firstWhere((lesson) => lesson['id'] == widget.lessonId);
             final startTime = lesson['startTime'];
-            final showButtons = _isExplanationRequired(startTime) && student['isPresent'] == 0;
+            final showButtons = _isExplanationRequired(startTime) && student['isPresent'] == 0 && student['showButtons'] == true;
 
             return DataRow(cells: [
               DataCell(
@@ -225,7 +254,7 @@ class _StudentListScreenState extends State<StudentListScreen> {
                 Text(student['arrivalTime'] ?? 'Не прибыл'),
               ),
               DataCell(
-                showButtons
+                student['showButtons']
                     ? Row(
                         children: [
                           ElevatedButton(
@@ -240,16 +269,22 @@ class _StudentListScreenState extends State<StudentListScreen> {
                           ElevatedButton(
                             onPressed: () {
                               setState(() {
-                                // Устанавливаем время прибытия как текущее
-                                final now = DateTime.now();
-                                final formattedTime = DateFormat('yyyy-MM-dd HH:mm').format(now);
-
-                                // Обновляем данные студента
-                                student['isPresent'] = 1;
-                                student['arrivalTime'] = formattedTime;
+                                // Скрыть кнопки, но не ставить галочку
+                                student['showButtons'] = false;
 
                                 // Обновляем данные в Hive
-                                _updateStudentStatus(student['id'], true);
+                                var box = Hive.box('schoolBox');
+                                final allStudents = List<Map<String, dynamic>>.from(box.get('students', defaultValue: []));
+                                final updatedStudents = allStudents.map((s) {
+                                  if (s['id'] == student['id']) {
+                                    return {
+                                      ...s,
+                                      'showButtons': false,
+                                    };
+                                  }
+                                  return s;
+                                }).toList();
+                                box.put('students', updatedStudents);
                               });
                             },
                             child: const Text('Нет'),
@@ -271,14 +306,14 @@ Future<void> _initializeData() async {
 
   // Добавление уроков
   box.put('lessons', [
-    {'id': 0, 'day': 'Monday', 'subject': 'Math', 'className': '10A', 'room': '101', 'startTime': '12:00'},
+    {'id': 0, 'day': 'Saturday', 'subject': 'Math', 'className': '10A', 'room': '101', 'startTime': '12:15'},
     {'id': 1, 'day': 'Monday', 'subject': 'Physics', 'className': '11B', 'room': '202', 'startTime': '09:00'},
   ]);
 
   // Добавление студентов
   box.put('students', [
-    {'id': 1, 'name': 'Иван Иванов', 'status': 'near_turnstile', 'lessonId': 0, 'isPresent': 0, 'arrivalTime': null},
-    {'id': 2, 'name': 'Петр Петров', 'status': 'absent', 'lessonId': 0, 'isPresent': 0, 'arrivalTime': null},
-    {'id': 3, 'name': 'Анна Смирнова', 'status': 'in_class', 'lessonId': 1, 'isPresent': 0, 'arrivalTime': null},
+    {'id': 1, 'name': 'Иван Иванов', 'status': 'near_turnstile', 'lessonId': 0, 'isPresent': 0, 'arrivalTime': null, 'showButtons': false},
+    {'id': 2, 'name': 'Петр Петров', 'status': 'absent', 'lessonId': 0, 'isPresent': 0, 'arrivalTime': null, 'showButtons': false},
+    {'id': 3, 'name': 'Анна Смирнова', 'status': 'in_class', 'lessonId': 1, 'isPresent': 0, 'arrivalTime': null, 'showButtons': false},
   ]);
 }
