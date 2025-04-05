@@ -1,9 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart';
 import 'db.dart';
+import 'package:intl/intl.dart';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  _initializeData();
+  await Hive.initFlutter(); // Инициализация Hive
+  await _initializeData(); // Заполнение тестовых данных
   runApp(const TeacherApp());
 }
 
@@ -23,42 +26,61 @@ class TeacherApp extends StatelessWidget {
   }
 }
 
-class ScheduleScreen extends StatelessWidget {
+class ScheduleScreen extends StatefulWidget {
   const ScheduleScreen({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final schedule = [
-      {'time': '08:00 - 08:45', 'subject': 'Math', 'class': '10A', 'room': '101'},
-      {'time': '09:00 - 09:45', 'subject': 'Physics', 'class': '11B', 'room': '202'},
-      // Добавьте остальные уроки
-    ];
+  State<ScheduleScreen> createState() => _ScheduleScreenState();
+}
 
+class _ScheduleScreenState extends State<ScheduleScreen> {
+  List<Map<String, dynamic>> schedule = [];
+
+  // Метод для загрузки расписания из базы данных
+  Future<void> _fetchSchedule() async {
+    var box = await Hive.openBox('schoolBox');
+    setState(() {
+      schedule = List<Map<String, dynamic>>.from(box.get('lessons', defaultValue: []));
+    });
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _fetchSchedule(); // Загружаем расписание при инициализации
+  }
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Расписание на сегодня'),
       ),
-      body: ListView.builder(
-        itemCount: schedule.length,
-        itemBuilder: (context, index) {
-          final lesson = schedule[index];
-          return ListTile(
-            title: Text('${lesson['subject']} (${lesson['class']})'),
-            subtitle: Text('${lesson['time']} | Кабинет: ${lesson['room']}'),
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (context) => StudentListScreen(
-                    subject: lesson['subject']!,
-                    className: lesson['class']!,
-                  ),
-                ),
-              );
-            },
-          );
-        },
-      ),
+      body: schedule.isEmpty
+          ? const Center(child: CircularProgressIndicator()) // Показать индикатор загрузки
+          : ListView.builder(
+              itemCount: schedule.length,
+              itemBuilder: (context, index) {
+                final lesson = schedule[index];
+                final lessonId = lesson['id'] ?? -1; // Устанавливаем -1, если lessonId равен null
+                return ListTile(
+                  title: Text('${lesson['subject']} (${lesson['className']})'),
+                  subtitle: Text('${lesson['day']} | Кабинет: ${lesson['room']}'),
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => StudentListScreen(
+                          subject: lesson['subject'] ?? 'Unknown Subject',
+                          className: lesson['className'] ?? 'Unknown Class',
+                          lessonId: lessonId, // Передаем lessonId
+                        ),
+                      ),
+                    );
+                  },
+                );
+              },
+            ),
     );
   }
 }
@@ -66,11 +88,13 @@ class ScheduleScreen extends StatelessWidget {
 class StudentListScreen extends StatefulWidget {
   final String subject;
   final String className;
+  final int lessonId; // Добавляем поле lessonId
 
   const StudentListScreen({
     super.key,
     required this.subject,
     required this.className,
+    required this.lessonId, // Передаем lessonId через конструктор
   });
 
   @override
@@ -81,20 +105,53 @@ class _StudentListScreenState extends State<StudentListScreen> {
   List<Map<String, dynamic>> students = [];
 
   Future<void> _fetchStudents() async {
-    final data = await DBHelper.query('students');
+    var box = await Hive.openBox('schoolBox');
+    final allStudents = List<Map<String, dynamic>>.from(box.get('students', defaultValue: []));
     setState(() {
-      students = data;
+      students = allStudents.where((student) => student['lessonId'] == widget.lessonId).toList();
     });
   }
 
-  Future<void> _updateStudentStatus(int id, String newStatus) async {
-    await DBHelper.update(
-      'students',
-      {'status': newStatus},
-      'id = ?',
-      [id],
-    );
+  Future<void> _updateStudentStatus(int studentId, bool isPresent) async {
+    var box = await Hive.openBox('schoolBox');
+    final allStudents = List<Map<String, dynamic>>.from(box.get('students', defaultValue: []));
+    final updatedStudents = allStudents.map((student) {
+      if (student['id'] == studentId) {
+        return {
+          ...student,
+          'isPresent': isPresent ? 1 : 0,
+          'arrivalTime': isPresent ? student['arrivalTime'] ?? DateFormat('yyyy-MM-dd HH:mm').format(DateTime.now()) : null,
+        };
+      }
+      return student;
+    }).toList();
+    await box.put('students', updatedStudents);
     _fetchStudents();
+  }
+
+  Future<void> _updateArrivalTime() async {
+    var box = await Hive.openBox('schoolBox');
+    final allStudents = List<Map<String, dynamic>>.from(box.get('students', defaultValue: []));
+    final updatedStudents = allStudents.map((student) {
+      if (student['isPresent'] == 1) {
+        final now = DateTime.now();
+        final formattedTime = DateFormat('yyyy-MM-dd HH:mm').format(now); // Форматируем дату и время
+        return {
+          ...student,
+          'arrivalTime': formattedTime,
+        };
+      }
+      return student;
+    }).toList();
+    await box.put('students', updatedStudents);
+    _fetchStudents();
+  }
+
+  bool _isExplanationRequired(String startTime) {
+    final now = DateTime.now();
+    final lessonStartTime = DateFormat('HH:mm').parse(startTime);
+    final lessonStartDateTime = DateTime(now.year, now.month, now.day, lessonStartTime.hour, lessonStartTime.minute);
+    return now.difference(lessonStartDateTime).inMinutes >= 10;
   }
 
   @override
@@ -126,27 +183,81 @@ class _StudentListScreenState extends State<StudentListScreen> {
                 style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
               ),
             ),
+            DataColumn(
+              label: Text(
+                'Время прибытия',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
+            DataColumn(
+              label: Text(
+                'Потребовать объяснительную?',
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              ),
+            ),
           ],
           rows: students.map((student) {
+            final lesson = Hive.box('schoolBox').get('lessons').firstWhere((lesson) => lesson['id'] == widget.lessonId);
+            final startTime = lesson['startTime'];
+            final showButtons = _isExplanationRequired(startTime) && student['isPresent'] == 0;
+
             return DataRow(cells: [
               DataCell(
                 Text(
                   student['name'],
                   style: TextStyle(
                     fontSize: 14,
-                    color: student['status'] == 'near_turnstile' ? Colors.green : Colors.grey,
+                    color: student['isPresent'] == 1 ? Colors.green : Colors.grey,
                   ),
                 ),
               ),
               DataCell(Checkbox(
-                value: student['status'] == 'in_class',
+                value: student['isPresent'] == 1,
                 activeColor: Colors.green,
                 onChanged: (value) {
-                  if (value == true) {
-                    _updateStudentStatus(student['id'], 'in_class');
-                  }
+                  _updateStudentStatus(student['id'], value!);
+                  setState(() {
+                    // Скрыть кнопки, если галочка установлена
+                  });
                 },
               )),
+              DataCell(
+                Text(student['arrivalTime'] ?? 'Не прибыл'),
+              ),
+              DataCell(
+                showButtons
+                    ? Row(
+                        children: [
+                          ElevatedButton(
+                            onPressed: () {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                const SnackBar(content: Text('Запрос отправлен')),
+                              );
+                            },
+                            child: const Text('Да'),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            onPressed: () {
+                              setState(() {
+                                // Устанавливаем время прибытия как текущее
+                                final now = DateTime.now();
+                                final formattedTime = DateFormat('yyyy-MM-dd HH:mm').format(now);
+
+                                // Обновляем данные студента
+                                student['isPresent'] = 1;
+                                student['arrivalTime'] = formattedTime;
+
+                                // Обновляем данные в Hive
+                                _updateStudentStatus(student['id'], true);
+                              });
+                            },
+                            child: const Text('Нет'),
+                          ),
+                        ],
+                      )
+                    : const Text(''),
+              ),
             ]);
           }).toList(),
         ),
@@ -155,23 +266,19 @@ class _StudentListScreenState extends State<StudentListScreen> {
   }
 }
 
-void _initializeData() async {
-  await DBHelper.insert('lessons', {
-    'day': 'Monday',
-    'subject': 'Math',
-    'className': '10A',
-    'room': '101',
-  });
+Future<void> _initializeData() async {
+  var box = await Hive.openBox('schoolBox');
 
-  await DBHelper.insert('students', {
-    'name': 'Иван Иванов',
-    'status': 'near_turnstile',
-    'lessonId': 1,
-  });
+  // Добавление уроков
+  box.put('lessons', [
+    {'id': 0, 'day': 'Monday', 'subject': 'Math', 'className': '10A', 'room': '101', 'startTime': '12:00'},
+    {'id': 1, 'day': 'Monday', 'subject': 'Physics', 'className': '11B', 'room': '202', 'startTime': '09:00'},
+  ]);
 
-  await DBHelper.insert('students', {
-    'name': 'Петр Петров',
-    'status': 'absent',
-    'lessonId': 1,
-  });
+  // Добавление студентов
+  box.put('students', [
+    {'id': 1, 'name': 'Иван Иванов', 'status': 'near_turnstile', 'lessonId': 0, 'isPresent': 0, 'arrivalTime': null},
+    {'id': 2, 'name': 'Петр Петров', 'status': 'absent', 'lessonId': 0, 'isPresent': 0, 'arrivalTime': null},
+    {'id': 3, 'name': 'Анна Смирнова', 'status': 'in_class', 'lessonId': 1, 'isPresent': 0, 'arrivalTime': null},
+  ]);
 }

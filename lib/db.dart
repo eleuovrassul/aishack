@@ -1,8 +1,13 @@
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import 'package:sqflite/sqflite.dart';
 import 'package:path/path.dart';
 
 class DBHelper {
   static Future<Database> initDB() async {
+    // Инициализация для Windows, macOS или Linux
+    sqfliteFfiInit();
+    databaseFactory = databaseFactoryFfi;
+
     final dbPath = await getDatabasesPath();
     final path = join(dbPath, 'school.db');
 
@@ -10,7 +15,6 @@ class DBHelper {
       path,
       version: 1,
       onCreate: (db, version) async {
-        // Создание таблицы уроков
         await db.execute('''
           CREATE TABLE lessons (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -20,7 +24,7 @@ class DBHelper {
             room TEXT
           )
         ''');
-        // Создание таблицы учеников
+
         await db.execute('''
           CREATE TABLE students (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -28,6 +32,17 @@ class DBHelper {
             status TEXT,
             lessonId INTEGER,
             FOREIGN KEY (lessonId) REFERENCES lessons (id)
+          )
+        ''');
+
+        await db.execute('''
+          CREATE TABLE schedule (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            lessonId INTEGER,
+            studentId INTEGER,
+            isPresent INTEGER DEFAULT 0,
+            FOREIGN KEY (lessonId) REFERENCES lessons (id),
+            FOREIGN KEY (studentId) REFERENCES students (id)
           )
         ''');
       },
@@ -47,5 +62,10 @@ class DBHelper {
   static Future<int> update(String table, Map<String, dynamic> data, String where, List<dynamic> whereArgs) async {
     final db = await initDB();
     return await db.update(table, data, where: where, whereArgs: whereArgs);
+  }
+
+  static Future<List<Map<String, dynamic>>> rawQuery(String sql, [List<dynamic>? args]) async {
+    final db = await initDB();
+    return await db.rawQuery(sql, args);
   }
 }
